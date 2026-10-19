@@ -16,33 +16,44 @@ from scipy import stats
 # ============================================================================
 
 def parse_filename(filename):
-    """Parse the filename to extract mouse ID and date"""
+    """
+    Parse stems of the form  <mouseID>_<M>_<D>_<YY>_<Suffix>
+    e.g.  TBA11_8_27_26_Photometry  ->  mouse=TBA11, date=2026-08-27
+          TCG5_9_01_26_Events       ->  mouse=TCG5,  date=2026-09-01
+
+    Returns dict with 'mouse_id', 'date' (M_D_YY string for display),
+    'date_tuple' (yyyy, m, d) for sorting, and 'filename'.
+    """
     name = Path(filename).stem
     parts = name.split('_')
 
     mouse_id = parts[0] if parts else "Unknown"
 
-    date_pattern = r'(\d+)_(\d+)_(\d+)'
-    date_match = re.search(date_pattern, name)
+    # The last three *_digit_ tokens are M, D, YY. Walk backwards.
+    nums = []
+    for tok in reversed(parts):
+        if tok.isdigit():
+            nums.append(tok)
+            if len(nums) == 3:
+                break
+    nums.reverse()  # -> [M, D, YY]
 
-    if date_match:
-        month = date_match.group(1)
-        day = date_match.group(2)
-        year = date_match.group(3)
-        date = f"{month}_{day}_{year}"
+    if len(nums) == 3:
+        month, day, yy = (int(n) for n in nums)
+        # 2-digit year -> 4-digit; adjust the cutoff if you ever go past 2050.
+        year = 2000 + yy if yy < 70 else 1900 + yy
+        date = f"{month}_{day}_{yy}"
+        date_tuple = (year, month, day)
     else:
-        date_parts = []
-        for i in range(len(parts)-1, -1, -1):
-            if re.match(r'^\d+$', parts[i]):
-                date_parts.insert(0, parts[i])
-                if len(date_parts) == 3:
-                    break
-        date = '_'.join(date_parts) if date_parts else "Unknown_Date"
+        # Fallback: keep old behaviour so nothing silently explodes
+        date = "Unknown_Date"
+        date_tuple = (9999, 99, 99)
 
     return {
         'mouse_id': mouse_id,
-        'date': date,
-        'filename': filename
+        'date': date,               # human-readable, still M_D_YY
+        'date_tuple': date_tuple,   # for sorting
+        'filename': filename,
     }
 
 def load_photometry_data(filepath):
@@ -83,6 +94,7 @@ def match_files(photometry_files, events_files):
                 matched_pairs.append({
                     'mouse_id': p_info['mouse_id'],
                     'date': p_info['date'],
+                    'date_tuple': p_info['date_tuple'],
                     'photometry_file': p_file,
                     'events_file': e_file
                 })
@@ -2204,20 +2216,16 @@ def main():
     print("FIRST PASS: Collecting all dates for each mouse")
     print("="*60)
 
-    mouse_all_dates = defaultdict(list)
+    # NEW:
+    mouse_all_dates = defaultdict(dict)          # mouse_id -> {date_str: date_tuple}
     for pair in matched_pairs:
-        mouse_id = pair['mouse_id']
-        date = pair['date']
-        if date not in mouse_all_dates[mouse_id]:
-            mouse_all_dates[mouse_id].append(date)
+        mouse_all_dates[pair['mouse_id']][pair['date']] = pair['date_tuple']
 
     mouse_day_assignment = {}
-    for mouse_id, dates in mouse_all_dates.items():
-        sorted_dates = sorted(dates)
-        mouse_day_assignment[mouse_id] = {}
-        for day_num, date in enumerate(sorted_dates, 1):
-            mouse_day_assignment[mouse_id][date] = day_num
-        print(f"  {mouse_id}: {len(sorted_dates)} total sessions, days 1-{len(sorted_dates)}")
+    for mouse_id, date_map in mouse_all_dates.items():
+        ordered = sorted(date_map.items(), key=lambda kv: kv[1])   # sort by (year, month, day)
+        mouse_day_assignment[mouse_id] = {d: i for i, (d, _) in enumerate(ordered, 1)}
+        print(mouse_id, "->", [d for d, _ in ordered])
 
     # ------------------------------------------------------------------
     # Process both trial types PER ANIMAL/DAY so we can split on the
